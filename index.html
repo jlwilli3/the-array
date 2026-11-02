@@ -769,16 +769,6 @@
         spawnImpact(x, y, MUTED);
         noise(0.03, 0.02, 700);
       }
-      if (courseFinished()) endStage();
-    }
-
-    function courseFinished() {
-      for (let i = 0; i < targets.length; i++) {
-        const target = targets[i];
-        if (target.kind === "paper" && target.holes.length < PAPER_HITS) return false;
-        if (target.steel && !target.down) return false;
-      }
-      return true;
     }
 
     function beginReload() {
@@ -1433,7 +1423,7 @@
           reloadLeft > 0 ? GOOD : "rgba(244,239,228,0.45)",
           reloadLeft > 0 ? GOOD : CREAM
         );
-        drawButton(END_BOX, "END STAGE", "OR STOP WITH TARGETS OPEN", "#1c1b17", AMBER, AMBER);
+        drawButton(END_BOX, "END STAGE", "TIME IS YOUR LAST SHOT", "#1c1b17", AMBER, AMBER);
       } else {
         drawButton(RELOAD_BOX, "STAGES", "PICK ANOTHER", "#1c1b17", "rgba(244,239,228,0.45)", CREAM);
         drawButton(END_BOX, "AGAIN", currentStage().name, "#1c1b17", AMBER, AMBER);
@@ -1566,7 +1556,7 @@
       ctx.fillStyle = MUTED;
       ctx.fillText("A5   C3   D1   STEEL 5   ·   BEST 2   ·   MISS −10", VW / 2, 568);
       ctx.fillText("CLOCK STARTS ON THE BEEP", VW / 2, 592);
-      ctx.fillText("CLOCK STOPS WHEN THE STAGE IS FINISHED", VW / 2, 616);
+      ctx.fillText("YOU END THE STAGE  ·  TIME IS THE LAST SHOT", VW / 2, 616);
     }
 
     function lineValue(line) {
