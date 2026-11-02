@@ -244,6 +244,8 @@
     let lastPointerType = "";
     let lastPointerAt = 0;
     let lastCycleAt = 0;
+    let lastFireAt = 0;
+    let endPressId = null;
 
     function loadBests() {
       bests = {};
@@ -759,6 +761,7 @@
       const stamp = (now - beepAt) / 1000;
       shotTimes.push(stamp);
       lastShotAt = stamp;
+      lastFireAt = now;
       recoil = 12;
       shake = 2.2;
       sfxShot();
@@ -1766,10 +1769,7 @@
         beginReload();
         return;
       }
-      if (inBox(point, END_BOX)) {
-        endStage();
-        return;
-      }
+      if (inBox(point, END_BOX)) return;
       if (!inBay(point)) return;
       aim.x = point.x;
       aim.y = point.y;
@@ -1796,11 +1796,9 @@
       if (code === "Space" || code === "Enter") {
         if (phase === "title") openStage(stageIndex);
         else if (phase === "ready") beginStandby();
-        else if (phase === "live" && code === "Enter") endStage();
         else if (phase === "live" && code === "Space") fireAt(aim.x, aim.y);
         else if (phase === "results") openStage(stageIndex);
       } else if (code === "KeyR") beginReload();
-      else if (code === "KeyE" && phase === "live") endStage();
     });
 
     window.addEventListener("keyup", function (event) {
@@ -1829,8 +1827,25 @@
       if (canvas.setPointerCapture) {
         try { canvas.setPointerCapture(event.pointerId); } catch (err) { /* ignore */ }
       }
-      onPointerDown(virtualPoint(event.clientX, event.clientY));
+      const point = virtualPoint(event.clientX, event.clientY);
+      if (phase === "live" && inBox(point, END_BOX)) endPressId = event.pointerId;
+      else endPressId = null;
+      onPointerDown(point);
     }, { passive: false });
+
+    function releaseEndPress(event) {
+      if (endPressId == null || event.pointerId !== endPressId) return;
+      endPressId = null;
+      if (phase !== "live") return;
+      if (performance.now() - lastFireAt < 350) return;
+      const point = virtualPoint(event.clientX, event.clientY);
+      if (inBox(point, END_BOX)) endStage();
+    }
+
+    canvas.addEventListener("pointerup", releaseEndPress);
+    canvas.addEventListener("pointercancel", function (event) {
+      if (event.pointerId === endPressId) endPressId = null;
+    });
 
     canvas.addEventListener("pointermove", function (event) {
       if (phase === "title" || phase === "results") return;
