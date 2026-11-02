@@ -1,0 +1,1867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#12110f" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="Carry Optics stage simulator. USPSA minor Comstock scoring, 22-round magazine, hit factor on the last shot." />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Carry Optics" />
+  <title>Carry Optics</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%2312110f' width='32' height='32'/%3E%3Crect x='5' y='8' width='22' height='16' rx='2' fill='none' stroke='%23f4efe4' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%23ff2d2d'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #12110f;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      touch-action: none;
+    }
+
+    html, body {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      color: #f4efe4;
+      overflow: hidden;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior: none;
+    }
+
+    canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: crosshair;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" aria-label="USPSA Carry Optics stage simulator" role="application"></canvas>
+  <script>
+    "use strict";
+
+    const VW = 480;
+    const VH = 800;
+    const BEST_KEY = "uspsa-co-bests";
+    const LEGACY_BEST_KEY = "uspsa-co-array-best-hf";
+
+    const MAG = 22;
+    const RELOAD_TIME = 1.5;
+    const PAPER_HITS = 2;
+    const NOSHOOT_MAX = 2;
+    const MISS_POINTS = 10;
+    const NOSHOOT_POINTS = 10;
+    const STEEL_POINTS = 5;
+    const CYCLE_MS = 65;
+
+    const HUD_H = 72;
+    const PANEL_Y = 648;
+    const FAULT_Y = 632;
+
+    const ZONE_POINTS = { A: 5, C: 3, D: 1 };
+
+    // Elliptical distance tests in normalized target space.
+    // A is the metric head plus the central column. The perforation scores inward.
+    const ZONE = {
+      head: { x: 0, y: -0.64, rx: 0.56, ry: 0.38 },
+      a:    { x: 0, y: 0.02, rx: 0.32, ry: 0.56 },
+      c:    { x: 0, y: 0.04, rx: 0.68, ry: 0.80 },
+    };
+
+    const RELOAD_BOX = { x: 14, y: 708, w: 220, h: 78 };
+    const END_BOX = { x: 246, y: 708, w: 220, h: 78 };
+    const WIDE_BOX = { x: 14, y: 708, w: 452, h: 78 };
+
+    const MONO = '"Share Tech Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+    const DISPLAY = '600 {size}px Oswald, "Arial Narrow", Impact, sans-serif';
+
+    const INK = "#141210";
+    const PAPER = "#d7b888";
+    const PAPER_DEEP = "#c4a06e";
+    const BACKER = "#8a6840";
+    const WHITE_CARD = "#f6f3ec";
+    const STEEL = "#e6ebef";
+    const STEEL_EDGE = "#667078";
+    const HUD = "#12110f";
+    const CREAM = "#f4efe4";
+    const MUTED = "#a39888";
+    const AMBER = "#f0a202";
+    const RED = "#ff2d2d";
+    const MISS_C = "#ff5d4e";
+    const GOOD = "#d6ff6b";
+
+    // Flat-top octagon. Shoulders wider than the head, base clipped. This is the cardboard.
+    const OCTAGON = [
+      [-0.50, -1.00],
+      [ 0.50, -1.00],
+      [ 1.00, -0.46],
+      [ 1.00,  0.48],
+      [ 0.58,  1.00],
+      [-0.58,  1.00],
+      [-1.00,  0.48],
+      [-1.00, -0.46],
+    ];
+
+    // Popper silhouette, head at the top, hinge along the base.
+    const POPPER = [
+      [-0.46, -1.00],
+      [ 0.46, -1.00],
+      [ 0.66, -0.70],
+      [ 0.36, -0.46],
+      [ 0.82, -0.08],
+      [ 1.00,  0.42],
+      [ 0.90,  1.00],
+      [-0.90,  1.00],
+      [-1.00,  0.42],
+      [-0.82, -0.08],
+      [-0.36, -0.46],
+      [-0.66, -0.70],
+    ];
+
+    const STAGES = [
+      {
+        id: "array",
+        code: "CO-17",
+        name: "THE ARRAY",
+        blurb: "PAPER, NO-SHOOTS, STEEL",
+        targets: [
+          { id: "T1", kind: "paper", x: 92, y: 186, rx: 36, ry: 52, depth: 10 },
+          { id: "S1", kind: "popper", x: 240, y: 196, rx: 18, ry: 48, depth: 12 },
+          { id: "T2", kind: "paper", x: 388, y: 186, rx: 36, ry: 52, depth: 10 },
+          { id: "T3", kind: "paper", x: 112, y: 334, rx: 46, ry: 66, depth: 20 },
+          { id: "PL1", kind: "plate", x: 240, y: 338, r: 26, depth: 24 },
+          { id: "T4", kind: "paper", x: 368, y: 334, rx: 46, ry: 66, depth: 20 },
+          { id: "NS1", kind: "noshot", x: 168, y: 356, rx: 36, ry: 54, depth: 30 },
+          { id: "NS2", kind: "noshot", x: 312, y: 356, rx: 36, ry: 54, depth: 30 },
+          { id: "T5", kind: "paper", x: 156, y: 500, rx: 52, ry: 72, depth: 36 },
+          { id: "S2", kind: "popper", x: 46, y: 508, rx: 20, ry: 50, depth: 40 },
+          { id: "T6", kind: "paper", x: 324, y: 500, rx: 52, ry: 72, depth: 36 },
+          { id: "S3", kind: "popper", x: 434, y: 508, rx: 20, ry: 50, depth: 40 },
+          { id: "PL2", kind: "plate", x: 240, y: 598, r: 28, depth: 50 },
+        ],
+      },
+      {
+        id: "rack",
+        code: "CO-11",
+        name: "PLATE RACK",
+        blurb: "STEEL ONLY",
+        targets: [
+          { id: "P1", kind: "plate", x: 54, y: 236, r: 24, depth: 10 },
+          { id: "P2", kind: "plate", x: 128, y: 220, r: 24, depth: 11 },
+          { id: "P3", kind: "plate", x: 202, y: 210, r: 24, depth: 12 },
+          { id: "P4", kind: "plate", x: 276, y: 210, r: 24, depth: 13 },
+          { id: "P5", kind: "plate", x: 350, y: 220, r: 24, depth: 14 },
+          { id: "P6", kind: "plate", x: 424, y: 236, r: 24, depth: 15 },
+          { id: "P7", kind: "plate", x: 78, y: 430, r: 30, depth: 20 },
+          { id: "P8", kind: "plate", x: 164, y: 448, r: 30, depth: 21 },
+          { id: "P9", kind: "plate", x: 250, y: 458, r: 30, depth: 22 },
+          { id: "P10", kind: "plate", x: 336, y: 448, r: 30, depth: 23 },
+          { id: "P11", kind: "plate", x: 422, y: 430, r: 30, depth: 24 },
+        ],
+      },
+      {
+        id: "star",
+        code: "CO-05",
+        name: "TEXAS STAR",
+        blurb: "FIVE PLATES · SPINS WHEN HIT",
+        star: { x: 240, y: 348, radius: 150 },
+        targets: [
+          { id: "P1", kind: "plate", r: 22, depth: 20, arm: 0 },
+          { id: "P2", kind: "plate", r: 22, depth: 21, arm: 1 },
+          { id: "P3", kind: "plate", r: 22, depth: 22, arm: 2 },
+          { id: "P4", kind: "plate", r: 22, depth: 23, arm: 3 },
+          { id: "P5", kind: "plate", r: 22, depth: 24, arm: 4 },
+        ],
+      },
+      {
+        id: "movers",
+        code: "CO-08",
+        name: "MOVERS",
+        blurb: "RUNNER · SWINGER · BOBBER",
+        targets: [
+          { id: "T1", kind: "paper", x: 240, y: 196, rx: 34, ry: 48, depth: 12, motion: { type: "slide", originX: 240, originY: 196, ampX: 158, ampY: 0, period: 3.4, phase: 0 } },
+          { id: "NS1", kind: "noshot", x: 240, y: 348, rx: 38, ry: 54, depth: 30 },
+          { id: "T2", kind: "paper", x: 240, y: 330, rx: 40, ry: 56, depth: 18, motion: { type: "swing", pivotX: 240, pivotY: 156, length: 174, amp: 0.82, period: 3.1, phase: 0 } },
+          { id: "PL1", kind: "plate", x: 68, y: 470, r: 26, depth: 24, motion: { type: "slide", originX: 68, originY: 470, ampX: 0, ampY: 62, period: 1.7, phase: 0.4 } },
+          { id: "S1", kind: "popper", x: 400, y: 500, rx: 18, ry: 46, depth: 26, motion: { type: "swing", pivotX: 400, pivotY: 390, length: 96, amp: 0.7, period: 2.2, phase: 1.2 } },
+          { id: "T3", kind: "paper", x: 250, y: 548, rx: 48, ry: 66, depth: 36 },
+        ],
+      },
+    ];
+
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d", { alpha: false });
+
+    const view = { cssW: 1, cssH: 1, dpr: 1, scale: 1, offsetX: 0, offsetY: 0 };
+    const keys = new Set();
+    const floaters = [];
+    const impacts = [];
+    const bermMarks = [];
+    const shotTimes = [];
+    const aim = { x: 240, y: 420 };
+
+    let targets = [];
+    let stageIndex = 0;
+    let star = null;
+    let motionTime = 0;
+    let minRounds = 0;
+    let phase = "title";
+    let ammo = MAG;
+    let reloadLeft = 0;
+    let beepAt = 0;
+    let standbyUntil = 0;
+    let lastShotAt = 0;
+    let officialTime = 0;
+    let shotsFired = 0;
+    let result = null;
+    let bests = {};
+    let newBest = false;
+    let time = 0;
+    let recoil = 0;
+    let shake = 0;
+    let goLeft = 0;
+    let audioCtx = null;
+    let noiseBuffer = null;
+    let lastPointerType = "";
+    let lastPointerAt = 0;
+    let lastCycleAt = 0;
+
+    function loadBests() {
+      bests = {};
+      try {
+        const raw = localStorage.getItem(BEST_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (parsed && typeof parsed === "object") bests = parsed;
+        const legacy = Number(localStorage.getItem(LEGACY_BEST_KEY));
+        if (Number.isFinite(legacy) && legacy > (Number(bests.array) || 0)) bests.array = legacy;
+      } catch (err) {
+        bests = {};
+      }
+    }
+
+    loadBests();
+
+    function rand(min, max) {
+      return min + Math.random() * (max - min);
+    }
+
+    function clamp(v, a, b) {
+      return v < a ? a : v > b ? b : v;
+    }
+
+    function displayFont(size) {
+      return DISPLAY.replace("{size}", String(size));
+    }
+
+    function formatTime(seconds) {
+      return Math.max(0, seconds).toFixed(2);
+    }
+
+    function formatHF(value) {
+      if (!(value > 0)) return "0.0000";
+      return value.toFixed(4);
+    }
+
+    function layout() {
+      view.cssW = Math.max(1, window.innerWidth);
+      view.cssH = Math.max(1, window.innerHeight);
+      view.dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
+      canvas.width = Math.round(view.cssW * view.dpr);
+      canvas.height = Math.round(view.cssH * view.dpr);
+      canvas.style.width = view.cssW + "px";
+      canvas.style.height = view.cssH + "px";
+      view.scale = Math.min(view.cssW / VW, view.cssH / VH);
+      view.offsetX = (view.cssW - VW * view.scale) / 2;
+      view.offsetY = (view.cssH - VH * view.scale) / 2;
+    }
+
+    function unlockAudio() {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!audioCtx) audioCtx = new AC();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+    }
+
+    function tone(freq, dur, type, vol, slide) {
+      if (!audioCtx || freq <= 0 || vol <= 0) return;
+      try {
+        const t = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, t);
+        if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(40, slide), t + dur);
+        gain.gain.setValueAtTime(vol, t);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(t);
+        osc.stop(t + dur + 0.02);
+      } catch (err) {
+        /* audio is optional */
+      }
+    }
+
+    function ensureNoise() {
+      if (!audioCtx || noiseBuffer) return;
+      const length = Math.floor(audioCtx.sampleRate * 0.09);
+      const buffer = audioCtx.createBuffer(1, length, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+      noiseBuffer = buffer;
+    }
+
+    function noise(dur, vol, freq) {
+      if (!audioCtx || vol <= 0) return;
+      try {
+        ensureNoise();
+        const src = audioCtx.createBufferSource();
+        const filter = audioCtx.createBiquadFilter();
+        const gain = audioCtx.createGain();
+        const t = audioCtx.currentTime;
+        src.buffer = noiseBuffer;
+        filter.type = "bandpass";
+        filter.frequency.setValueAtTime(freq, t);
+        filter.Q.setValueAtTime(0.7, t);
+        gain.gain.setValueAtTime(vol, t);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        src.connect(filter);
+        filter.connect(gain);
+        gain.connect(audioCtx.destination);
+        src.start(t);
+        src.stop(t + dur + 0.02);
+      } catch (err) {
+        /* audio is optional */
+      }
+    }
+
+    // Shot-timer beep: 1200 Hz held for 0.3 seconds. The clock starts on this onset.
+    function timerBeep() {
+      if (!audioCtx) return;
+      try {
+        const t = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "square";
+        osc.frequency.setValueAtTime(1200, t);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.07, t + 0.012);
+        gain.gain.setValueAtTime(0.07, t + 0.28);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.30);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(t);
+        osc.stop(t + 0.32);
+      } catch (err) {
+        /* audio is optional */
+      }
+    }
+
+    function sfxShot() {
+      noise(0.045, 0.06, 1800);
+      tone(170, 0.07, "square", 0.035, 55);
+    }
+
+    function sfxZone(letter) {
+      if (letter === "A") tone(880, 0.045, "square", 0.03, 1280);
+      else if (letter === "C") tone(540, 0.05, "square", 0.028, 760);
+      else tone(280, 0.06, "triangle", 0.03, 160);
+    }
+
+    function sfxSteel(big) {
+      tone(big ? 920 : 1480, 0.09, "sine", 0.045, big ? 220 : 380);
+      noise(0.05, 0.04, big ? 800 : 1500);
+    }
+
+    function sfxNoShoot() {
+      tone(120, 0.14, "sawtooth", 0.04, 70);
+    }
+
+    function sfxEmpty() {
+      tone(92, 0.045, "square", 0.028, 48);
+    }
+
+    function sfxReload() {
+      tone(240, 0.08, "triangle", 0.03, 110);
+    }
+
+    function sfxReloadDone() {
+      tone(520, 0.045, "square", 0.03, 840);
+      noise(0.04, 0.03, 900);
+    }
+
+    function sfxClank() {
+      tone(160, 0.07, "triangle", 0.032, 55);
+    }
+
+    function sfxEnd() {
+      tone(660, 0.07, "square", 0.03, 440);
+    }
+
+    function virtualPoint(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const scale = view.scale || 1;
+      return {
+        x: (clientX - rect.left - view.offsetX) / scale,
+        y: (clientY - rect.top - view.offsetY) / scale,
+      };
+    }
+
+    function inBox(p, box) {
+      return p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h;
+    }
+
+    function inBay(p) {
+      return p.x >= 0 && p.x <= VW && p.y >= HUD_H && p.y < PANEL_Y;
+    }
+
+    function halfH(target) {
+      return target.kind === "plate" ? target.r : target.ry;
+    }
+
+    function ellipseDist(nx, ny, zone) {
+      return Math.hypot((nx - zone.x) / zone.rx, (ny - zone.y) / zone.ry);
+    }
+
+    function zoneFromPoint(nx, ny) {
+      if (ellipseDist(nx, ny, ZONE.head) <= 1) return "A";
+      if (ellipseDist(nx, ny, ZONE.a) <= 1) return "A";
+      if (ellipseDist(nx, ny, ZONE.c) <= 1) return "C";
+      return "D";
+    }
+
+    function pointInNormPoly(px, py, target, poly) {
+      const nx = (px - target.x) / target.rx;
+      const ny = (py - target.y) / target.ry;
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i][0];
+        const yi = poly[i][1];
+        const xj = poly[j][0];
+        const yj = poly[j][1];
+        const crosses = (yi > ny) !== (yj > ny);
+        if (!crosses) continue;
+        const xHit = ((xj - xi) * (ny - yi)) / ((yj - yi) || 1e-9) + xi;
+        if (nx < xHit) inside = !inside;
+      }
+      return inside;
+    }
+
+    function containsPoint(target, px, py) {
+      if (target.kind === "plate") {
+        const dx = px - target.x;
+        const dy = py - target.y;
+        return dx * dx + dy * dy <= target.r * target.r;
+      }
+      if (target.kind === "popper") return pointInNormPoly(px, py, target, POPPER);
+      return pointInNormPoly(px, py, target, OCTAGON);
+    }
+
+    function currentStage() {
+      return STAGES[stageIndex] || STAGES[0];
+    }
+
+    function stageBest(id) {
+      const n = Number(bests[id]);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    }
+
+    function stageRounds(stage) {
+      let rounds = 0;
+      for (let i = 0; i < stage.targets.length; i++) {
+        const kind = stage.targets[i].kind;
+        if (kind === "paper") rounds += PAPER_HITS;
+        else if (kind === "popper" || kind === "plate") rounds += 1;
+      }
+      return rounds;
+    }
+
+    function copyMotion(motion) {
+      if (!motion) return null;
+      return {
+        type: motion.type,
+        originX: motion.originX || 0,
+        originY: motion.originY || 0,
+        ampX: motion.ampX || 0,
+        ampY: motion.ampY || 0,
+        period: motion.period || 2,
+        phase: motion.phase || 0,
+        pivotX: motion.pivotX || 0,
+        pivotY: motion.pivotY || 0,
+        length: motion.length || 0,
+        amp: motion.amp || 0,
+      };
+    }
+
+    function buildTargets() {
+      const stage = currentStage();
+      const list = [];
+      let rounds = 0;
+      star = null;
+      if (stage.star) {
+        star = { x: stage.star.x, y: stage.star.y, radius: stage.star.radius, angle: 0, omega: 0, arms: 5 };
+      }
+      for (let i = 0; i < stage.targets.length; i++) {
+        const spec = stage.targets[i];
+        const steel = spec.kind === "popper" || spec.kind === "plate";
+        const arm = spec.arm == null ? null : (spec.arm / 5) * Math.PI * 2;
+        const target = {
+          id: spec.id,
+          kind: spec.kind,
+          x: spec.x || stage.star && stage.star.x || 0,
+          y: spec.y || stage.star && stage.star.y || 0,
+          rx: spec.rx || spec.r || 0,
+          ry: spec.ry || spec.r || 0,
+          r: spec.r || 0,
+          depth: spec.depth,
+          steel: steel,
+          arm: arm,
+          motion: copyMotion(spec.motion),
+          holes: [],
+          down: false,
+          fall: 0,
+          fallV: 0,
+          clanked: false,
+        };
+        if (star && arm != null) {
+          target.x = star.x + Math.sin(arm) * star.radius;
+          target.y = star.y - Math.cos(arm) * star.radius;
+        }
+        list.push(target);
+        if (spec.kind === "paper") rounds += PAPER_HITS;
+        else if (steel) rounds += 1;
+      }
+      list.sort(function (a, b) {
+        return a.depth - b.depth;
+      });
+      minRounds = rounds;
+      return list;
+    }
+
+    function stageCardBox(index) {
+      return { x: 24, y: 158 + index * 94, w: 432, h: 86 };
+    }
+
+    function rankHoleIndexes(holes) {
+      const order = [];
+      for (let i = 0; i < holes.length; i++) order.push(i);
+      order.sort(function (a, b) {
+        const delta = holes[b].points - holes[a].points;
+        return delta !== 0 ? delta : a - b;
+      });
+      return order;
+    }
+
+    function refreshHoleCredit(target) {
+      if (target.kind === "paper") {
+        const order = rankHoleIndexes(target.holes);
+        const keep = Object.create(null);
+        const take = order.length < PAPER_HITS ? order.length : PAPER_HITS;
+        for (let i = 0; i < take; i++) keep[order[i]] = true;
+        for (let i = 0; i < target.holes.length; i++) target.holes[i].counts = !!keep[i];
+        return;
+      }
+      if (target.kind === "noshot") {
+        for (let i = 0; i < target.holes.length; i++) target.holes[i].counts = i < NOSHOOT_MAX;
+      }
+    }
+
+    function paperPointsOf(target) {
+      const order = rankHoleIndexes(target.holes);
+      const take = order.length < PAPER_HITS ? order.length : PAPER_HITS;
+      let pts = 0;
+      for (let i = 0; i < take; i++) pts += target.holes[order[i]].points;
+      return pts;
+    }
+
+    function paperLetters(target) {
+      if (target.holes.length === 0) return "—";
+      let text = "";
+      for (let i = 0; i < target.holes.length; i++) {
+        const hole = target.holes[i];
+        const token = hole.counts ? hole.letter : "(" + hole.letter + ")";
+        text += (text ? " " : "") + token;
+      }
+      return text;
+    }
+
+    // Comstock, Carry Optics minor.
+    // Score = (best 2 hits on each paper + steel that fell) − (10 per missing hit + 10 per no-shoot hit, max 2).
+    // Hit factor = score / last-shot time. Non-positive score forces HF to 0.
+    function computeScore(targetList, timeValue) {
+      let paperPoints = 0;
+      let steelPoints = 0;
+      let missCount = 0;
+      let noShootCount = 0;
+      const lines = [];
+
+      for (let i = 0; i < targetList.length; i++) {
+        const target = targetList[i];
+        if (target.kind === "paper") {
+          const pts = paperPointsOf(target);
+          const placed = target.holes.length;
+          const misses = placed >= PAPER_HITS ? 0 : PAPER_HITS - placed;
+          paperPoints += pts;
+          missCount += misses;
+          lines.push({
+            id: target.id,
+            kind: "paper",
+            detail: paperLetters(target),
+            pts: pts,
+            misses: misses,
+            ns: 0,
+          });
+        } else if (target.steel) {
+          if (target.fall >= 1) {
+            steelPoints += STEEL_POINTS;
+            lines.push({ id: target.id, kind: "steel", detail: "DOWN", pts: STEEL_POINTS, misses: 0, ns: 0 });
+          } else if (target.down) {
+            lines.push({ id: target.id, kind: "steel", detail: "FALL", pts: 0, misses: 0, ns: 0 });
+          } else {
+            missCount += 1;
+            lines.push({ id: target.id, kind: "steel", detail: "UP", pts: 0, misses: 1, ns: 0 });
+          }
+        } else if (target.kind === "noshot") {
+          const counted = target.holes.length < NOSHOOT_MAX ? target.holes.length : NOSHOOT_MAX;
+          noShootCount += counted;
+          lines.push({
+            id: target.id,
+            kind: "noshot",
+            detail: "×" + target.holes.length,
+            pts: 0,
+            misses: 0,
+            ns: counted,
+          });
+        }
+      }
+
+      const missPenalty = missCount * MISS_POINTS;
+      const noShootPenalty = noShootCount * NOSHOOT_POINTS;
+      const gross = paperPoints + steelPoints;
+      const total = gross - missPenalty - noShootPenalty;
+      const elapsed = timeValue > 0 ? timeValue : 0;
+      let hf = 0;
+      if (total > 0 && elapsed > 0) hf = total / elapsed;
+
+      return {
+        paperPoints: paperPoints,
+        steelPoints: steelPoints,
+        gross: gross,
+        missCount: missCount,
+        missPenalty: missPenalty,
+        noShootCount: noShootCount,
+        noShootPenalty: noShootPenalty,
+        total: total,
+        time: elapsed,
+        hf: hf,
+        lines: lines,
+      };
+    }
+
+    function runningTime() {
+      if (phase === "results") return officialTime;
+      if (phase !== "live" || beepAt <= 0) return 0;
+      return (performance.now() - beepAt) / 1000;
+    }
+
+    function spawnFloater(x, y, text, color) {
+      floaters.push({ x: x, y: y, text: text, color: color, life: 0.65, max: 0.65 });
+    }
+
+    function spawnImpact(x, y, color) {
+      impacts.push({ x: x, y: y, life: 0.16, max: 0.16, color: color });
+    }
+
+    function markBerm(x, y) {
+      bermMarks.push({ x: x, y: y, r: rand(2.2, 3.4) });
+      if (bermMarks.length > 32) bermMarks.shift();
+    }
+
+    function pickTarget(x, y) {
+      for (let i = targets.length - 1; i >= 0; i--) {
+        const target = targets[i];
+        if (target.steel && target.down) continue;
+        if (containsPoint(target, x, y)) return target;
+      }
+      return null;
+    }
+
+    function applyHit(target, x, y) {
+      if (target.kind === "paper") {
+        const nx = (x - target.x) / target.rx;
+        const ny = (y - target.y) / target.ry;
+        const letter = zoneFromPoint(nx, ny);
+        const points = ZONE_POINTS[letter];
+        target.holes.push({ nx: nx, ny: ny, letter: letter, points: points, counts: false });
+        refreshHoleCredit(target);
+        sfxZone(letter);
+        spawnFloater(x, y - 16, letter + " +" + points, letter === "A" ? GOOD : CREAM);
+        spawnImpact(x, y, letter === "A" ? AMBER : CREAM);
+        return;
+      }
+      if (target.kind === "noshot") {
+        const counts = target.holes.length < NOSHOOT_MAX;
+        const nx = (x - target.x) / target.rx;
+        const ny = (y - target.y) / target.ry;
+        target.holes.push({ nx: nx, ny: ny, letter: "X", points: -NOSHOOT_POINTS, counts: counts });
+        refreshHoleCredit(target);
+        sfxNoShoot();
+        spawnFloater(x, y - 16, counts ? "NS −10" : "NS EXTRA", MISS_C);
+        spawnImpact(x, y, MISS_C);
+        return;
+      }
+      target.down = true;
+      target.fall = 0;
+      target.fallV = 0.35;
+      if (star && target.arm != null) star.omega += target.x >= star.x ? 1.25 : -1.25;
+      sfxSteel(target.kind === "plate" && target.r >= 28);
+      spawnFloater(x, y - 18, "STEEL +5", GOOD);
+      spawnImpact(x, y, STEEL);
+    }
+
+    function fireAt(x, y) {
+      if (phase !== "live") return;
+      const now = performance.now();
+      if (reloadLeft > 0) {
+        sfxEmpty();
+        spawnFloater(x, y - 14, "RELOAD", AMBER);
+        return;
+      }
+      if (ammo <= 0) {
+        sfxEmpty();
+        spawnFloater(x, y - 14, "EMPTY", MISS_C);
+        return;
+      }
+      if (beepAt <= 0) return;
+      if (now - lastCycleAt < CYCLE_MS) return;
+      lastCycleAt = now;
+      ammo -= 1;
+      shotsFired += 1;
+      const stamp = (now - beepAt) / 1000;
+      shotTimes.push(stamp);
+      lastShotAt = stamp;
+      recoil = 12;
+      shake = 2.2;
+      sfxShot();
+      const target = pickTarget(x, y);
+      if (target) applyHit(target, x, y);
+      else {
+        markBerm(x, y);
+        spawnImpact(x, y, MUTED);
+        noise(0.03, 0.02, 700);
+      }
+      if (courseFinished()) endStage();
+    }
+
+    function courseFinished() {
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        if (target.kind === "paper" && target.holes.length < PAPER_HITS) return false;
+        if (target.steel && !target.down) return false;
+      }
+      return true;
+    }
+
+    function beginReload() {
+      if (phase !== "live" || reloadLeft > 0) return;
+      if (ammo >= MAG) {
+        sfxEmpty();
+        spawnFloater(RELOAD_BOX.x + 70, RELOAD_BOX.y - 8, "MAG FULL", MUTED);
+        return;
+      }
+      reloadLeft = RELOAD_TIME;
+      sfxReload();
+    }
+
+    function beginStandby() {
+      if (phase !== "ready") return;
+      phase = "standby";
+      standbyUntil = performance.now() + rand(0.85, 1.9) * 1000;
+    }
+
+    function startBeep() {
+      phase = "live";
+      beepAt = performance.now();
+      lastShotAt = 0;
+      goLeft = 0.45;
+      unlockAudio();
+      timerBeep();
+    }
+
+    function endStage() {
+      if (phase !== "live") return;
+      phase = "results";
+      reloadLeft = 0;
+      officialTime = lastShotAt > 0 ? lastShotAt : (performance.now() - beepAt) / 1000;
+      newBest = false;
+      rememberBest();
+      sfxEnd();
+    }
+
+    function rememberBest() {
+      if (phase !== "results") return;
+      result = computeScore(targets, officialTime);
+      const id = currentStage().id;
+      if (!(result.hf > stageBest(id) + 0.0000001)) return;
+      bests[id] = result.hf;
+      newBest = true;
+      try {
+        localStorage.setItem(BEST_KEY, JSON.stringify(bests));
+      } catch (err) {
+        /* storage is optional */
+      }
+    }
+
+    function resetStage() {
+      motionTime = 0;
+      targets = buildTargets();
+      ammo = MAG;
+      reloadLeft = 0;
+      beepAt = 0;
+      standbyUntil = 0;
+      lastShotAt = 0;
+      officialTime = 0;
+      shotsFired = 0;
+      result = null;
+      newBest = false;
+      recoil = 0;
+      shake = 0;
+      goLeft = 0;
+      shotTimes.length = 0;
+      floaters.length = 0;
+      impacts.length = 0;
+      bermMarks.length = 0;
+      aim.x = 240;
+      aim.y = 430;
+    }
+
+    function updateFalls(dt) {
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        if (!target.down || target.fall >= 1) continue;
+        target.fallV += dt * 5.4;
+        target.fall = Math.min(1, target.fall + target.fallV * dt);
+        if (target.fall >= 1 && !target.clanked) {
+          target.clanked = true;
+          target.fall = 1;
+          sfxClank();
+        }
+      }
+    }
+
+    function updateFloaters(dt) {
+      for (let i = floaters.length - 1; i >= 0; i--) {
+        const floater = floaters[i];
+        floater.life -= dt;
+        floater.y -= dt * 28;
+        if (floater.life <= 0) floaters.splice(i, 1);
+      }
+    }
+
+    function updateImpacts(dt) {
+      for (let i = impacts.length - 1; i >= 0; i--) {
+        impacts[i].life -= dt;
+        if (impacts[i].life <= 0) impacts.splice(i, 1);
+      }
+    }
+
+    function updateStar(dt) {
+      if (!star) return;
+      let torque = 0;
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        if (target.arm == null || target.down) continue;
+        torque += Math.sin(star.angle + target.arm);
+      }
+      star.omega += torque * 3.4 * dt;
+      star.omega *= Math.exp(-0.22 * dt);
+      if (star.omega > 2.05) star.omega = 2.05;
+      if (star.omega < -2.05) star.omega = -2.05;
+      star.angle += star.omega * dt;
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        if (target.arm == null || target.down) continue;
+        const angle = star.angle + target.arm;
+        target.x = star.x + Math.sin(angle) * star.radius;
+        target.y = star.y - Math.cos(angle) * star.radius;
+      }
+    }
+
+    function updateMotion(dt) {
+      updateStar(dt);
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        const motion = target.motion;
+        if (!motion || (target.steel && target.down)) continue;
+        if (motion.type === "slide") {
+          const wave = (motionTime / motion.period) * Math.PI * 2 + motion.phase;
+          target.x = motion.originX + Math.sin(wave) * motion.ampX;
+          target.y = motion.originY + Math.sin(wave) * motion.ampY;
+        } else if (motion.type === "swing") {
+          const wave = Math.sin((motionTime / motion.period) * Math.PI * 2 + motion.phase);
+          const angle = wave * motion.amp;
+          target.x = motion.pivotX + Math.sin(angle) * motion.length;
+          target.y = motion.pivotY + Math.cos(angle) * motion.length;
+        }
+      }
+    }
+
+    function updateAimKeys(dt) {
+      let dx = 0;
+      let dy = 0;
+      if (keys.has("ArrowLeft") || keys.has("KeyA")) dx -= 1;
+      if (keys.has("ArrowRight") || keys.has("KeyD")) dx += 1;
+      if (keys.has("ArrowUp") || keys.has("KeyW")) dy -= 1;
+      if (keys.has("ArrowDown") || keys.has("KeyS")) dy += 1;
+      if (!dx && !dy) return;
+      const len = Math.hypot(dx, dy) || 1;
+      aim.x = clamp(aim.x + (dx / len) * 360 * dt, 20, VW - 20);
+      aim.y = clamp(aim.y + (dy / len) * 360 * dt, HUD_H + 20, PANEL_Y - 16);
+    }
+
+    function update(dt) {
+      time += dt;
+      if (shake > 0) {
+        shake = Math.max(0, shake - dt * 14);
+        if (shake < 0.15) shake = 0;
+      }
+      if (recoil > 0) {
+        recoil *= Math.exp(-14 * dt);
+        if (recoil < 0.08) recoil = 0;
+      }
+      if (goLeft > 0) goLeft = Math.max(0, goLeft - dt);
+      if (phase !== "title") {
+        motionTime += dt;
+        updateMotion(dt);
+      }
+      updateFalls(dt);
+      updateFloaters(dt);
+      updateImpacts(dt);
+      if (reloadLeft > 0 && phase === "live") {
+        reloadLeft -= dt;
+        if (reloadLeft <= 0) {
+          reloadLeft = 0;
+          ammo = MAG;
+          sfxReloadDone();
+        }
+      }
+      if (phase === "standby" && performance.now() >= standbyUntil) startBeep();
+      if (phase === "results") rememberBest();
+      if (phase === "ready" || phase === "standby" || phase === "live") updateAimKeys(dt);
+    }
+
+    function enterCabinet() {
+      ctx.setTransform(
+        view.dpr * view.scale,
+        0,
+        0,
+        view.dpr * view.scale,
+        view.offsetX * view.dpr,
+        view.offsetY * view.dpr
+      );
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+      ctx.letterSpacing = "0px";
+    }
+
+    function roundRectPath(x, y, w, h, r) {
+      const rr = Math.max(0, Math.min(r, w * 0.5, h * 0.5));
+      ctx.moveTo(x + rr, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rr);
+      ctx.arcTo(x + w, y + h, x, y + h, rr);
+      ctx.arcTo(x, y + h, x, y, rr);
+      ctx.arcTo(x, y, x + w, y, rr);
+      ctx.closePath();
+    }
+
+    function traceNorm(poly, rx, ry) {
+      ctx.beginPath();
+      for (let i = 0; i < poly.length; i++) {
+        const px = poly[i][0] * rx;
+        const py = poly[i][1] * ry;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    }
+
+    function drawRange() {
+      const sky = ctx.createLinearGradient(0, HUD_H, 0, PANEL_Y);
+      sky.addColorStop(0, "#2a2e2a");
+      sky.addColorStop(0.42, "#3d4638");
+      sky.addColorStop(0.72, "#5a4c38");
+      sky.addColorStop(1, "#2a2622");
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, HUD_H, VW, PANEL_Y - HUD_H);
+
+      ctx.save();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = "#f4efe4";
+      ctx.beginPath();
+      ctx.ellipse(120, 108, 70, 10, 0, 0, Math.PI * 2);
+      ctx.ellipse(240, 102, 90, 12, 0, 0, Math.PI * 2);
+      ctx.ellipse(370, 110, 64, 9, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.strokeStyle = "rgba(20, 16, 12, 0.28)";
+      ctx.lineWidth = 2;
+      for (let y = 150; y < FAULT_Y; y += 46) {
+        ctx.beginPath();
+        ctx.moveTo(18, y);
+        ctx.lineTo(VW - 18, y + 8);
+        ctx.stroke();
+      }
+
+      for (let i = 0; i < bermMarks.length; i++) {
+        const mark = bermMarks[i];
+        ctx.fillStyle = "rgba(20, 16, 12, 0.55)";
+        ctx.beginPath();
+        ctx.ellipse(mark.x, mark.y, mark.r * 1.3, mark.r, 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      const floor = ctx.createLinearGradient(0, FAULT_Y - 8, 0, PANEL_Y);
+      floor.addColorStop(0, "#3a342c");
+      floor.addColorStop(1, "#241f1b");
+      ctx.fillStyle = floor;
+      ctx.fillRect(0, FAULT_Y, VW, PANEL_Y - FAULT_Y);
+
+      const segments = 16;
+      const segW = (VW - 36) / segments;
+      for (let i = 0; i < segments; i++) {
+        ctx.fillStyle = i % 2 === 0 ? "#e6c84a" : "#16140f";
+        ctx.fillRect(18 + i * segW, FAULT_Y - 4, segW + 0.5, 6);
+      }
+
+      ctx.font = "11px " + MONO;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(244, 239, 228, 0.45)";
+      ctx.fillText("P1", 22, FAULT_Y + 12);
+    }
+
+    function drawStand(target) {
+      const foot = target.y + halfH(target);
+      ctx.strokeStyle = "#1a1814";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(target.x, foot - 2);
+      ctx.lineTo(target.x, foot + 16);
+      ctx.moveTo(target.x - 10, foot + 16);
+      ctx.lineTo(target.x + 10, foot + 16);
+      ctx.stroke();
+    }
+
+    function drawZoneEllipse(zone, rx, ry) {
+      ctx.beginPath();
+      ctx.ellipse(zone.x * rx, zone.y * ry, zone.rx * rx, zone.ry * ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    function drawHole(hole, rx, ry, index) {
+      const x = hole.nx * rx;
+      const y = hole.ny * ry;
+      const angle = -1.15 + (index % 6) * 0.95;
+      const lx = x + Math.cos(angle) * 12;
+      const ly = y + Math.sin(angle) * 12;
+      ctx.save();
+      ctx.globalAlpha = hole.counts ? 1 : 0.42;
+      ctx.beginPath();
+      ctx.arc(x, y, 3.6, 0, Math.PI * 2);
+      ctx.fillStyle = "#140f0c";
+      ctx.fill();
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = hole.counts ? (hole.letter === "A" ? AMBER : hole.letter === "C" ? "#7eb6e8" : hole.letter === "D" ? "#c4845a" : MISS_C) : "rgba(20,16,12,0.35)";
+      ctx.stroke();
+      const label = hole.letter === "X" ? (hole.counts ? "-10" : "x") : hole.letter;
+      ctx.font = "700 12px " + MONO;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(255, 248, 236, 0.92)";
+      ctx.strokeText(label, lx, ly);
+      ctx.fillStyle = INK;
+      ctx.fillText(label, lx, ly);
+      ctx.restore();
+    }
+
+    function drawCard(target) {
+      const noShoot = target.kind === "noshot";
+      ctx.save();
+      ctx.translate(target.x, target.y);
+
+      traceNorm(OCTAGON, target.rx * 1.045, target.ry * 1.03);
+      ctx.fillStyle = noShoot ? "#d9d3c8" : BACKER;
+      ctx.fill();
+
+      traceNorm(OCTAGON, target.rx, target.ry);
+      ctx.fillStyle = noShoot ? WHITE_CARD : PAPER;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = noShoot ? "#2a241c" : "rgba(48, 32, 16, 0.55)";
+      ctx.stroke();
+
+      if (!noShoot) {
+        ctx.save();
+        traceNorm(OCTAGON, target.rx, target.ry);
+        ctx.clip();
+        ctx.setLineDash([2, 2.5]);
+        ctx.lineWidth = 1.15;
+        ctx.strokeStyle = "rgba(36, 24, 12, 0.55)";
+        drawZoneEllipse(ZONE.c, target.rx, target.ry);
+        ctx.strokeStyle = "rgba(36, 24, 12, 0.8)";
+        drawZoneEllipse(ZONE.a, target.rx, target.ry);
+        drawZoneEllipse(ZONE.head, target.rx, target.ry);
+        ctx.setLineDash([]);
+        ctx.restore();
+      } else {
+        ctx.font = "700 10px " + MONO;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = INK;
+        ctx.fillText("NO SHOOT", 0, -target.ry * 0.72);
+      }
+
+      for (let i = 0; i < target.holes.length; i++) drawHole(target.holes[i], target.rx, target.ry, i);
+      ctx.restore();
+
+      ctx.font = "11px " + MONO;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillStyle = noShoot ? "#2a241c" : "rgba(244, 239, 228, 0.88)";
+      ctx.fillText(target.id, target.x, target.y - target.ry - 6);
+    }
+
+    function drawPopperBody() {
+      traceNorm(POPPER, 1, 1);
+      const g = ctx.createLinearGradient(-1, -1, 1, 1);
+      g.addColorStop(0, "#f7f9fb");
+      g.addColorStop(0.45, STEEL);
+      g.addColorStop(1, "#b7c0c6");
+      ctx.fillStyle = g;
+      ctx.fill();
+      ctx.lineWidth = 0.06;
+      ctx.strokeStyle = STEEL_EDGE;
+      ctx.stroke();
+    }
+
+    function drawSteel(target) {
+      ctx.save();
+      const hingeY = target.y + halfH(target);
+      ctx.translate(target.x, hingeY);
+      ctx.rotate(target.fall * 1.35);
+      ctx.scale(1, Math.max(0.2, 1 - target.fall * 0.8));
+      ctx.globalAlpha = 1 - target.fall * 0.45;
+      ctx.translate(0, -halfH(target));
+
+      if (target.kind === "plate") {
+        const g = ctx.createLinearGradient(-target.r, -target.r, target.r, target.r);
+        g.addColorStop(0, "#ffffff");
+        g.addColorStop(0.55, STEEL);
+        g.addColorStop(1, "#aeb6bc");
+        ctx.beginPath();
+        ctx.arc(0, 0, target.r, 0, Math.PI * 2);
+        ctx.fillStyle = g;
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "#1c2024";
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, 0, 2.2, 0, Math.PI * 2);
+        ctx.fillStyle = "#2a3034";
+        ctx.fill();
+      } else {
+        ctx.save();
+        ctx.scale(target.rx, target.ry);
+        drawPopperBody();
+        ctx.restore();
+      }
+      ctx.restore();
+
+      if (target.fall < 0.2) {
+        ctx.font = "11px " + MONO;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillStyle = "rgba(244, 239, 228, 0.88)";
+        ctx.fillText(target.id, target.x, target.y - halfH(target) - 6);
+      }
+    }
+
+    function drawMounts() {
+      if (star) {
+        ctx.save();
+        ctx.translate(star.x, star.y);
+        ctx.strokeStyle = "#241f1a";
+        ctx.lineWidth = 8;
+        ctx.lineCap = "round";
+        for (let i = 0; i < star.arms; i++) {
+          const angle = star.angle + (i / star.arms) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.sin(angle) * star.radius, -Math.cos(angle) * star.radius);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(0, 0, 18, 0, Math.PI * 2);
+        ctx.fillStyle = "#1a1714";
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "#8d867c";
+        ctx.stroke();
+        ctx.restore();
+      }
+      for (let i = 0; i < targets.length; i++) {
+        const motion = targets[i].motion;
+        if (!motion) continue;
+        ctx.save();
+        ctx.strokeStyle = "rgba(28, 24, 18, 0.55)";
+        ctx.lineWidth = 4;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        if (motion.type === "slide") {
+          ctx.moveTo(motion.originX - motion.ampX, motion.originY - motion.ampY);
+          ctx.lineTo(motion.originX + motion.ampX, motion.originY + motion.ampY);
+        } else if (motion.type === "swing") {
+          ctx.moveTo(motion.pivotX, motion.pivotY);
+          ctx.lineTo(targets[i].x, targets[i].y);
+          ctx.moveTo(motion.pivotX, motion.pivotY);
+          ctx.arc(motion.pivotX, motion.pivotY, 5, 0, Math.PI * 2);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    function drawTargets() {
+      drawMounts();
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        if (!target.motion && target.arm == null) drawStand(target);
+      }
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i];
+        if (target.steel) drawSteel(target);
+        else drawCard(target);
+      }
+    }
+
+    function drawImpacts() {
+      for (let i = 0; i < impacts.length; i++) {
+        const impact = impacts[i];
+        const k = 1 - impact.life / impact.max;
+        ctx.save();
+        ctx.globalAlpha = impact.life / impact.max;
+        ctx.strokeStyle = impact.color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(impact.x, impact.y, 4 + k * 16, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    function drawFloaters() {
+      ctx.save();
+      ctx.font = "700 13px " + MONO;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (let i = 0; i < floaters.length; i++) {
+        const floater = floaters[i];
+        ctx.globalAlpha = Math.max(0, floater.life / floater.max);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(12, 10, 8, 0.8)";
+        ctx.strokeText(floater.text, floater.x, floater.y);
+        ctx.fillStyle = floater.color;
+        ctx.fillText(floater.text, floater.x, floater.y);
+      }
+      ctx.restore();
+    }
+
+    function drawOptic() {
+      const w = 124;
+      const h = 86;
+      const rim = 12;
+      ctx.save();
+      ctx.translate(aim.x, aim.y + recoil);
+
+      ctx.beginPath();
+      roundRectPath(-w / 2, -h / 2, w, h, 12);
+      roundRectPath(-w / 2 + rim, -h / 2 + rim + 2, w - rim * 2, h - rim * 2 - 4, 4);
+      ctx.fillStyle = "#0c0c0c";
+      ctx.fill("evenodd");
+
+      ctx.strokeStyle = "#2a2a2a";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      roundRectPath(-w / 2, -h / 2, w, h, 12);
+      ctx.stroke();
+
+      ctx.fillStyle = "#161616";
+      ctx.fillRect(-34, -h / 2 - 7, 68, 8);
+      ctx.strokeStyle = "#3a3a3a";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-34, -h / 2 - 7, 68, 8);
+      ctx.strokeStyle = "rgba(80, 90, 70, 0.85)";
+      for (let i = 0; i < 4; i++) {
+        ctx.strokeRect(-30 + i * 16, -h / 2 - 5, 14, 4);
+      }
+
+      ctx.fillStyle = "#3a3a3a";
+      ctx.beginPath();
+      ctx.ellipse(-w / 2 + 2, -10, 3.2, 5, 0, 0, Math.PI * 2);
+      ctx.ellipse(-w / 2 + 2, 8, 3.2, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      roundRectPath(-w / 2 + rim, -h / 2 + rim + 2, w - rim * 2, h - rim * 2 - 4, 4);
+      ctx.fillStyle = "rgba(186, 214, 220, 0.05)";
+      ctx.fill();
+
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(-w / 2 + rim + 8, -h / 2 + rim + 10);
+      ctx.lineTo(w / 2 - rim - 18, -h / 2 + rim + 10);
+      ctx.stroke();
+
+      ctx.shadowColor = RED;
+      ctx.shadowBlur = 6;
+      ctx.fillStyle = RED;
+      ctx.beginPath();
+      ctx.arc(0, 0, 2.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+
+    function drawButton(box, title, sub, fill, border, titleColor) {
+      ctx.beginPath();
+      roundRectPath(box.x, box.y, box.w, box.h, 8);
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = border;
+      ctx.stroke();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "700 16px " + MONO;
+      ctx.fillStyle = titleColor;
+      ctx.fillText(title, box.x + box.w / 2, box.y + (sub ? 28 : box.h / 2));
+      if (sub) {
+        ctx.font = "12px " + MONO;
+        ctx.fillStyle = MUTED;
+        ctx.fillText(sub, box.x + box.w / 2, box.y + 52);
+      }
+    }
+
+    function drawPanel() {
+      ctx.fillStyle = HUD;
+      ctx.fillRect(0, PANEL_Y, VW, VH - PANEL_Y);
+      ctx.strokeStyle = "rgba(244, 239, 228, 0.16)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(16, PANEL_Y);
+      ctx.lineTo(VW - 16, PANEL_Y);
+      ctx.stroke();
+
+      ctx.font = "12px " + MONO;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "left";
+      ctx.fillStyle = MUTED;
+      ctx.fillText("MAG", 18, 678);
+      ctx.textAlign = "right";
+      ctx.fillStyle = ammo === 0 ? MISS_C : ammo <= 5 ? AMBER : CREAM;
+      ctx.font = "20px " + MONO;
+      ctx.fillText(String(ammo) + " / " + MAG, VW - 18, 678);
+
+      const barX = 62;
+      const barW = 280;
+      const slot = barW / MAG;
+      for (let i = 0; i < MAG; i++) {
+        const loaded = i < ammo;
+        ctx.fillStyle = loaded ? (ammo <= 5 ? AMBER : GOOD) : "rgba(163, 152, 136, 0.25)";
+        ctx.fillRect(barX + i * slot, 672, Math.max(2, slot - 2), 12);
+      }
+
+      if (reloadLeft > 0) {
+        const p = 1 - reloadLeft / RELOAD_TIME;
+        ctx.save();
+        ctx.beginPath();
+        roundRectPath(RELOAD_BOX.x, RELOAD_BOX.y, RELOAD_BOX.w, RELOAD_BOX.h, 8);
+        ctx.clip();
+        ctx.fillStyle = "rgba(214, 255, 107, 0.18)";
+        ctx.fillRect(RELOAD_BOX.x, RELOAD_BOX.y, RELOAD_BOX.w * p, RELOAD_BOX.h);
+        ctx.restore();
+      }
+
+      if (phase === "title") {
+        drawButton(WIDE_BOX, "MAKE READY", currentStage().name, "#1c1b17", AMBER, CREAM);
+      } else if (phase === "ready") {
+        drawButton(RELOAD_BOX, "STAGES", "BACK TO THE LIST", "#1c1b17", "rgba(244,239,228,0.45)", CREAM);
+        drawButton(END_BOX, "START", "STANDBY, THEN THE BEEP", "#1c1b17", AMBER, AMBER);
+      } else if (phase === "standby") {
+        drawButton(WIDE_BOX, "STAND BY", "FINGER OFF THE TRIGGER", "#1c1b17", MUTED, MUTED);
+      } else if (phase === "live") {
+        const reloadSub = reloadLeft > 0 ? formatTime(reloadLeft) + "  LOCKED" : (ammo >= MAG ? "MAGAZINE FULL" : "1.5 SECOND LOCK");
+        drawButton(
+          RELOAD_BOX,
+          reloadLeft > 0 ? "LOADING" : "RELOAD",
+          reloadSub,
+          "#1c1b17",
+          reloadLeft > 0 ? GOOD : "rgba(244,239,228,0.45)",
+          reloadLeft > 0 ? GOOD : CREAM
+        );
+        drawButton(END_BOX, "END STAGE", "OR STOP WITH TARGETS OPEN", "#1c1b17", AMBER, AMBER);
+      } else {
+        drawButton(RELOAD_BOX, "STAGES", "PICK ANOTHER", "#1c1b17", "rgba(244,239,228,0.45)", CREAM);
+        drawButton(END_BOX, "AGAIN", currentStage().name, "#1c1b17", AMBER, AMBER);
+      }
+    }
+
+    function drawHUD() {
+      ctx.fillStyle = HUD;
+      ctx.fillRect(0, 0, VW, HUD_H);
+      ctx.strokeStyle = "rgba(244, 239, 228, 0.16)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(16, HUD_H - 0.5);
+      ctx.lineTo(VW - 16, HUD_H - 0.5);
+      ctx.stroke();
+
+      const live = phase === "live" || phase === "results";
+      const clock = live ? runningTime() : 0;
+      const score = live ? computeScore(targets, phase === "results" ? officialTime : Math.max(clock, 0.0001)) : null;
+      const shown = score ? (phase === "results" ? score.total : score.gross - score.noShootPenalty) : 0;
+      const scoreLabel = phase === "results" ? "SCORE" : "PTS";
+
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "left";
+      ctx.font = "11px " + MONO;
+      ctx.fillStyle = MUTED;
+      ctx.fillText(phase === "results" ? "LAST SHOT" : "TIME", 16, 22);
+      ctx.font = "26px " + MONO;
+      ctx.fillStyle = goLeft > 0 ? AMBER : CREAM;
+      ctx.fillText(formatTime(clock), 16, 48);
+
+      ctx.textAlign = "center";
+      ctx.font = "12px " + MONO;
+      ctx.fillStyle = AMBER;
+      ctx.fillText("CARRY OPTICS", VW / 2, 22);
+      ctx.fillStyle = MUTED;
+      ctx.font = "11px " + MONO;
+      ctx.fillText("MINOR  ·  " + currentStage().code, VW / 2, 42);
+      if (goLeft > 0) {
+        ctx.fillStyle = AMBER;
+        ctx.font = "700 12px " + MONO;
+        ctx.fillText("GO", VW / 2, 58);
+      }
+
+      ctx.textAlign = "right";
+      ctx.font = "11px " + MONO;
+      ctx.fillStyle = MUTED;
+      ctx.fillText(live ? scoreLabel : "SCORE", VW - 16, 22);
+      ctx.font = "22px " + MONO;
+      ctx.fillStyle = shown < 0 ? MISS_C : CREAM;
+      ctx.fillText(live ? String(shown) : "—", VW - 16, 48);
+    }
+
+    function drawBanner() {
+      if (phase !== "ready" && phase !== "standby") return;
+      ctx.save();
+      ctx.fillStyle = "rgba(18, 17, 15, 0.82)";
+      ctx.fillRect(16, 82, VW - 32, 32);
+      ctx.font = "13px " + MONO;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      if (phase === "standby") {
+        ctx.fillStyle = AMBER;
+        ctx.fillText("STAND BY    ·    WAIT FOR THE BEEP", VW / 2, 98);
+      } else {
+        ctx.fillStyle = CREAM;
+        ctx.fillText(currentStage().name + "    ·    " + minRounds + " ROUNDS", VW / 2, 98);
+      }
+      ctx.restore();
+    }
+
+    function ruleRow(y, label, value, color) {
+      ctx.textAlign = "left";
+      ctx.fillStyle = MUTED;
+      ctx.font = "13px " + MONO;
+      ctx.fillText(label, 36, y);
+      ctx.textAlign = "right";
+      ctx.fillStyle = color || CREAM;
+      ctx.fillText(value, VW - 36, y);
+    }
+
+    function drawTitle() {
+      ctx.fillStyle = "rgba(10, 9, 8, 0.82)";
+      ctx.fillRect(0, HUD_H, VW, PANEL_Y - HUD_H);
+
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = AMBER;
+      ctx.font = "13px " + MONO;
+      ctx.fillText("USPSA  ·  CARRY OPTICS  ·  MINOR", VW / 2, 96);
+      ctx.fillStyle = CREAM;
+      ctx.font = displayFont(32);
+      ctx.fillText("PICK A STAGE", VW / 2, 126);
+
+      for (let i = 0; i < STAGES.length; i++) {
+        const stage = STAGES[i];
+        const box = stageCardBox(i);
+        const picked = i === stageIndex;
+        const hf = stageBest(stage.id);
+        ctx.beginPath();
+        roundRectPath(box.x, box.y, box.w, box.h, 8);
+        ctx.fillStyle = picked ? "#241e16" : "#1a1815";
+        ctx.fill();
+        ctx.lineWidth = picked ? 2 : 1;
+        ctx.strokeStyle = picked ? AMBER : "rgba(244, 239, 228, 0.22)";
+        ctx.stroke();
+
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.font = "12px " + MONO;
+        ctx.fillStyle = AMBER;
+        ctx.fillText(stage.code, box.x + 16, box.y + 22);
+        ctx.textAlign = "right";
+        ctx.fillStyle = hf > 0 ? GOOD : MUTED;
+        ctx.fillText(hf > 0 ? "HF " + formatHF(hf) : "NO HF", box.x + box.w - 16, box.y + 22);
+
+        ctx.textAlign = "left";
+        ctx.fillStyle = CREAM;
+        ctx.font = displayFont(26);
+        ctx.fillText(stage.name, box.x + 16, box.y + 48);
+        ctx.font = "12px " + MONO;
+        ctx.fillStyle = MUTED;
+        ctx.fillText(stage.blurb + "  ·  " + stageRounds(stage) + " ROUNDS", box.x + 16, box.y + 70);
+      }
+
+      ctx.fillStyle = "#12110f";
+      ctx.fillRect(0, 534, VW, PANEL_Y - 534);
+      ctx.textAlign = "center";
+      ctx.font = "12px " + MONO;
+      ctx.fillStyle = MUTED;
+      ctx.fillText("A5   C3   D1   STEEL 5   ·   BEST 2   ·   MISS −10", VW / 2, 568);
+      ctx.fillText("CLOCK STARTS ON THE BEEP", VW / 2, 592);
+      ctx.fillText("CLOCK STOPS WHEN THE STAGE IS FINISHED", VW / 2, 616);
+    }
+
+    function lineValue(line) {
+      if (line.kind === "noshot") {
+        return {
+          text: line.ns > 0 ? "−" + (line.ns * NOSHOOT_POINTS) : "0",
+          color: line.ns > 0 ? MISS_C : MUTED,
+        };
+      }
+      if (line.detail === "FALL") return { text: "…", color: AMBER };
+      if (line.misses > 0 && line.pts > 0) {
+        return { text: line.pts + " −" + (line.misses * MISS_POINTS), color: CREAM };
+      }
+      if (line.misses > 0) return { text: "−" + (line.misses * MISS_POINTS), color: MISS_C };
+      return { text: String(line.pts), color: line.pts > 0 ? GOOD : MUTED };
+    }
+
+    function drawResultLine(line, left, right, y) {
+      const value = lineValue(line);
+      ctx.font = "12px " + MONO;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "left";
+      ctx.fillStyle = CREAM;
+      ctx.fillText(line.id, left, y);
+      ctx.fillStyle = MUTED;
+      ctx.fillText(line.detail, left + 44, y);
+      ctx.textAlign = "right";
+      ctx.fillStyle = value.color;
+      ctx.fillText(value.text, right, y);
+    }
+
+    function drawResults() {
+      if (!result) return;
+      ctx.fillStyle = "#12110f";
+      ctx.fillRect(0, HUD_H, VW, PANEL_Y - HUD_H);
+
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "12px " + MONO;
+      ctx.fillStyle = newBest ? GOOD : MUTED;
+      ctx.fillText(newBest ? "NEW BEST HIT FACTOR" : "HIT FACTOR", VW / 2, 96);
+      ctx.font = displayFont(52);
+      ctx.fillStyle = CREAM;
+      ctx.fillText(formatHF(result.hf), VW / 2, 140);
+
+      ctx.font = "13px " + MONO;
+      ctx.fillStyle = MUTED;
+      if (result.total > 0 && result.time > 0) {
+        ctx.fillText(result.total + " / " + formatTime(result.time) + " = " + formatHF(result.hf), VW / 2, 176);
+      } else {
+        ctx.fillText("SCORE ≤ 0  →  HF 0.0000", VW / 2, 176);
+      }
+      ctx.fillStyle = CREAM;
+      ctx.fillText(
+        "(" + result.paperPoints + " + " + result.steelPoints + ") − (" + result.missPenalty + " + " + result.noShootPenalty + ") = " + result.total,
+        VW / 2,
+        198
+      );
+
+      const papers = [];
+      const others = [];
+      for (let i = 0; i < result.lines.length; i++) {
+        if (result.lines[i].kind === "paper") papers.push(result.lines[i]);
+        else others.push(result.lines[i]);
+      }
+
+      ctx.textAlign = "left";
+      ctx.font = "11px " + MONO;
+      ctx.fillStyle = MUTED;
+      let rowCount = 0;
+      if (papers.length === 0) {
+        const mid = Math.ceil(others.length / 2);
+        ctx.fillText("STEEL", 28, 228);
+        if (mid < others.length) ctx.fillText("STEEL", 252, 228);
+        rowCount = Math.max(mid, others.length - mid);
+        for (let i = 0; i < rowCount; i++) {
+          const y = 250 + i * 20;
+          if (others[i]) drawResultLine(others[i], 28, 220, y);
+          if (others[mid + i]) drawResultLine(others[mid + i], 252, 452, y);
+        }
+      } else {
+        ctx.fillText("PAPER", 28, 228);
+        ctx.fillText("STEEL / NO-SHOOT", 252, 228);
+        rowCount = Math.max(papers.length, others.length);
+        for (let i = 0; i < rowCount; i++) {
+          const y = 250 + i * 20;
+          if (papers[i]) drawResultLine(papers[i], 28, 228, y);
+          if (others[i]) drawResultLine(others[i], 252, 452, y);
+        }
+      }
+
+      const base = 250 + rowCount * 20 + 18;
+      ruleRow(base, "PAPER", String(result.paperPoints), GOOD);
+      ruleRow(base + 22, "STEEL", String(result.steelPoints), GOOD);
+      ruleRow(base + 44, "MISS ×" + result.missCount, "−" + result.missPenalty, MISS_C);
+      ruleRow(base + 66, "NO-SHOOT ×" + result.noShootCount, "−" + result.noShootPenalty, MISS_C);
+      ruleRow(base + 96, "STAGE SCORE", String(result.total), result.total > 0 ? CREAM : MISS_C);
+      ruleRow(base + 118, shotsFired > 0 ? "LAST SHOT" : "ABORT TIME", formatTime(result.time) + "s", CREAM);
+
+      const drawTime = shotTimes.length > 0 ? shotTimes[0] : 0;
+      const split = shotTimes.length > 1 ? shotTimes[shotTimes.length - 1] - shotTimes[shotTimes.length - 2] : 0;
+      ctx.textAlign = "center";
+      ctx.font = "12px " + MONO;
+      ctx.fillStyle = MUTED;
+      ctx.fillText(
+        "ROUNDS " + shotsFired + "    DRAW " + formatTime(drawTime) + "    SPLIT " + formatTime(split),
+        VW / 2,
+        Math.min(base + 148, PANEL_Y - 36)
+      );
+      const record = stageBest(currentStage().id);
+      ctx.fillStyle = record > 0 ? GOOD : MUTED;
+      ctx.fillText("BEST HF  " + (record > 0 ? formatHF(record) : "—"), VW / 2, Math.min(base + 170, PANEL_Y - 16));
+    }
+
+    function draw() {
+      ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+      ctx.fillStyle = HUD;
+      ctx.fillRect(0, 0, view.cssW, view.cssH);
+      enterCabinet();
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, VW, VH);
+      ctx.clip();
+
+      drawHUD();
+      drawRange();
+
+      ctx.save();
+      if (shake > 0) ctx.translate(Math.sin(time * 54) * shake, Math.cos(time * 47) * shake * 0.65);
+      if (phase !== "title" && phase !== "results") drawTargets();
+      if (phase === "results") drawTargets();
+      drawImpacts();
+      drawFloaters();
+      ctx.restore();
+
+      if (phase === "ready" || phase === "standby" || phase === "live") {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, HUD_H, VW, PANEL_Y - HUD_H);
+        ctx.clip();
+        drawOptic();
+        ctx.restore();
+      }
+
+      drawBanner();
+      if (phase === "title") drawTitle();
+      if (phase === "results") drawResults();
+      drawPanel();
+      ctx.restore();
+    }
+
+    function frame(now) {
+      if (!frame.last) frame.last = now;
+      let dt = (now - frame.last) / 1000;
+      frame.last = now;
+      if (dt > 0.05) dt = 0.05;
+      if (dt < 0) dt = 0;
+      update(dt);
+      draw();
+      requestAnimationFrame(frame);
+    }
+
+    function placeAim(point) {
+      if (!inBay(point)) return;
+      aim.x = clamp(point.x, 20, VW - 20);
+      aim.y = clamp(point.y, HUD_H + 16, PANEL_Y - 12);
+    }
+
+    function openStage(index) {
+      if (index != null) stageIndex = index;
+      resetStage();
+      phase = "ready";
+    }
+
+    function onPointerDown(point) {
+      unlockAudio();
+      if (phase === "title") {
+        for (let i = 0; i < STAGES.length; i++) {
+          if (inBox(point, stageCardBox(i))) {
+            openStage(i);
+            return;
+          }
+        }
+        if (inBox(point, WIDE_BOX)) openStage(stageIndex);
+        return;
+      }
+      if (phase === "results") {
+        if (inBox(point, RELOAD_BOX)) phase = "title";
+        else if (inBox(point, END_BOX)) openStage(stageIndex);
+        return;
+      }
+      if (phase === "ready") {
+        placeAim(point);
+        if (inBox(point, RELOAD_BOX)) {
+          phase = "title";
+          return;
+        }
+        if (inBox(point, END_BOX)) beginStandby();
+        return;
+      }
+      if (phase === "standby") {
+        placeAim(point);
+        return;
+      }
+      if (phase !== "live") return;
+      if (inBox(point, RELOAD_BOX)) {
+        beginReload();
+        return;
+      }
+      if (inBox(point, END_BOX)) {
+        endStage();
+        return;
+      }
+      if (!inBay(point)) return;
+      aim.x = point.x;
+      aim.y = point.y;
+      fireAt(point.x, point.y);
+    }
+
+    window.addEventListener("keydown", function (event) {
+      const code = event.code;
+      if (code === "Space" || code === "Enter" || code === "ArrowLeft" || code === "ArrowRight" || code === "ArrowUp" || code === "ArrowDown" || code === "KeyR" || code === "KeyE") {
+        event.preventDefault();
+      }
+      if (phase === "title" && (code === "ArrowDown" || code === "ArrowUp")) {
+        event.preventDefault();
+        stageIndex = (stageIndex + (code === "ArrowDown" ? 1 : STAGES.length - 1)) % STAGES.length;
+        return;
+      }
+      if (event.repeat) return;
+      keys.add(code);
+      unlockAudio();
+      if (code === "Escape" && (phase === "ready" || phase === "results" || phase === "standby")) {
+        phase = "title";
+        return;
+      }
+      if (code === "Space" || code === "Enter") {
+        if (phase === "title") openStage(stageIndex);
+        else if (phase === "ready") beginStandby();
+        else if (phase === "live" && code === "Enter") endStage();
+        else if (phase === "live" && code === "Space") fireAt(aim.x, aim.y);
+        else if (phase === "results") openStage(stageIndex);
+      } else if (code === "KeyR") beginReload();
+      else if (code === "KeyE" && phase === "live") endStage();
+    });
+
+    window.addEventListener("keyup", function (event) {
+      keys.delete(event.code);
+    });
+
+    window.addEventListener("blur", function () {
+      keys.clear();
+    });
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) keys.clear();
+    });
+
+    window.addEventListener("selectstart", function (event) { event.preventDefault(); });
+    window.addEventListener("dragstart", function (event) { event.preventDefault(); });
+    window.addEventListener("gesturestart", function (event) { event.preventDefault(); });
+
+    canvas.addEventListener("pointerdown", function (event) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const now = performance.now();
+      if (event.pointerType === "mouse" && lastPointerType === "touch" && now - lastPointerAt < 800) return;
+      lastPointerType = event.pointerType || "mouse";
+      lastPointerAt = now;
+      if (canvas.setPointerCapture) {
+        try { canvas.setPointerCapture(event.pointerId); } catch (err) { /* ignore */ }
+      }
+      onPointerDown(virtualPoint(event.clientX, event.clientY));
+    }, { passive: false });
+
+    canvas.addEventListener("pointermove", function (event) {
+      if (phase === "title" || phase === "results") return;
+      placeAim(virtualPoint(event.clientX, event.clientY));
+    }, { passive: false });
+
+    canvas.addEventListener("contextmenu", function (event) { event.preventDefault(); });
+    canvas.addEventListener("touchmove", function (event) { event.preventDefault(); }, { passive: false });
+
+    window.addEventListener("resize", function () {
+      layout();
+    });
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", function () { layout(); });
+    }
+
+    resetStage();
+    phase = "title";
+    layout();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
